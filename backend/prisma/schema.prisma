@@ -1,0 +1,190 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+// 1. Multi-Tenant
+model Tenant {
+  id          String   @id @default(uuid())
+  code        String   @unique
+  name        String
+  domain      String?  @unique
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users       User[]
+  apps        Application[]
+  auditLogs   AuditLog[]
+  settings    SecuritySetting?
+}
+
+// 2. Pengguna (User Management)
+model User {
+  id              String    @id @default(uuid())
+  tenantId        String
+  email           String    
+  username        String
+  passwordHash    String
+  fullName        String
+  group           String    @default("user") // 'admin' or 'user'
+  avatarUrl       String?
+  isActive        Boolean   @default(true) 
+  isLocked        Boolean   @default(false)
+  failedAttempts  Int       @default(0)
+  lastLoginAt     DateTime?
+  employeeId      String?   
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  tenant          Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userRoles       UserRole[]
+  tokens          RefreshToken[]
+  resetTokens     PasswordResetToken[]
+  auditLogs       AuditLog[]
+  appAccesses     UserApplicationAccess[]
+
+  @@unique([tenantId, email])
+  @@unique([tenantId, username])
+}
+
+// 3. Role & Permission (RBAC)
+model Role {
+  id          String           @id @default(uuid())
+  tenantId    String
+  name        String
+  description String?
+  isSystem    Boolean          @default(false)
+  userRoles   UserRole[]
+  permissions RolePermission[]
+
+  @@unique([tenantId, name])
+}
+
+model Permission {
+  id          String           @id @default(uuid())
+  name        String           @unique 
+  description String?
+  roles       RolePermission[]
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+}
+
+model UserRole {
+  userId String
+  roleId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role   Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+}
+
+// 4. Aplikasi Klien (OAuth 2.0 / OIDC Registered Clients)
+model Application {
+  id           String   @id @default(uuid())
+  tenantId     String
+  clientId     String   @unique
+  clientSecret String   
+  name         String
+  description  String?
+  redirectUris String // Disimpan sebagai JSON string karena MySQL Prisma tidak mendukung array of strings natively (jika postgres bisa String[])
+  postLogoutUris String 
+  isThirdParty Boolean  @default(false) 
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  tenant       Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  authCodes    AuthorizationCode[]
+  userAccesses UserApplicationAccess[]
+}
+
+model UserApplicationAccess {
+  userId        String
+  applicationId String
+  grantedAt     DateTime @default(now())
+
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  application Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@id([userId, applicationId])
+}
+
+// 5. Token & OIDC Lifecycle
+model AuthorizationCode {
+  id            String      @id @default(uuid())
+  code          String      @unique
+  clientId      String
+  userId        String
+  redirectUri   String
+  codeChallenge String      
+  codeChallengeMethod String 
+  expiresAt     DateTime
+  used          Boolean     @default(false)
+
+  app           Application @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String
+  tokenHash String   @unique
+  isRevoked Boolean  @default(false)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model PasswordResetToken {
+  id        String   @id @default(uuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  isUsed    Boolean  @default(false)
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// 6. Audit Logging
+model AuditLog {
+  id         String   @id @default(uuid())
+  tenantId   String
+  actorId    String?  
+  action     String   
+  targetType String   
+  targetId   String?
+  ipAddress  String?
+  userAgent  String?
+  metadata   String?  // JSON string
+  createdAt  DateTime @default(now())
+
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  actor      User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, createdAt])
+  @@index([action])
+}
+
+// 7. Security Setting
+model SecuritySetting {
+  id                   String   @id @default(uuid())
+  tenantId             String   @unique
+  minPasswordLength    Int      @default(8)
+  requireSpecialChar   Boolean  @default(true)
+  requireNumber        Boolean  @default(true)
+  maxLoginAttempts     Int      @default(5)
+  lockoutDurationMins  Int      @default(15)
+  sessionTimeoutMins   Int      @default(60)
+
+  tenant               Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+}
